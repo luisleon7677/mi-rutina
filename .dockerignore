@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+__pycache__
+*.pyc
+.git
+.env
+test_*.py
+README.md
