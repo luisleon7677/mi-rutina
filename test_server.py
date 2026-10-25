@@ -11,6 +11,70 @@ import server
 
 
 class PersistenceTest(unittest.TestCase):
+    def test_prayer_history_survives_uncheck_and_reset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original_db = server.DB
+            server.DB = Path(folder) / 'test.sqlite3'
+            server.initialize()
+            http = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+            thread = threading.Thread(target=http.serve_forever, daemon=True)
+            thread.start()
+            def request(path, data=None):
+                req = urllib.request.Request(f'http://127.0.0.1:{http.server_port}/api/{path}',
+                    data=None if data is None else json.dumps(data).encode(),
+                    headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req) as response:
+                    return json.load(response)
+            try:
+                prayer = request('prayers', {'name':'Por mi familia'})
+                self.assertEqual(request('prayer-toggle', {'id':prayer['id'], 'day':1}), {'marked':True})
+                self.assertEqual(request('prayer-toggle', {'id':prayer['id'], 'day':1}), {'marked':False})
+                self.assertEqual(request('prayers')[0]['total'], 1)
+                request('prayer-toggle', {'id':prayer['id'], 'day':1})
+                request('prayer-reset', {})
+                server.initialize()
+                self.assertEqual(request('prayers')[0]['total'], 2)
+                self.assertEqual(request('prayers')[0]['days'], [])
+            finally:
+                http.shutdown()
+                http.server_close()
+                thread.join()
+                server.DB = original_db
+
+    def test_rename_preserves_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original_db = server.DB
+            server.DB = Path(folder) / 'test.sqlite3'
+            server.initialize()
+            http = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+            thread = threading.Thread(target=http.serve_forever, daemon=True)
+            thread.start()
+            def request(path, data=None):
+                req = urllib.request.Request(f'http://127.0.0.1:{http.server_port}/api/{path}',
+                    data=None if data is None else json.dumps(data).encode(),
+                    headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req) as response:
+                    return json.load(response)
+            try:
+                prayer = request('prayers', {'name':'Inicial'})
+                request('prayer-toggle', {'id':prayer['id'], 'day':2})
+                activity = request('activities', {'name':'Inicial', 'category':'habit'})
+                request('toggle', {'id':activity['id'], 'day':3})
+                goal = request('goals', {'name':'Inicial'})
+                item = request('goal-items', {'goal_id':goal['id'], 'name':'Inicial'})
+                request('goal-toggle', {'id':item['id']})
+                for kind, item_id in [('prayer',prayer['id']),('activity',activity['id']),('goal',goal['id']),('goal-item',item['id'])]:
+                    self.assertEqual(request('rename', {'kind':kind,'id':item_id,'name':'Nuevo'}), {'name':'Nuevo'})
+                self.assertEqual((request('prayers')[0]['total'],request('prayers')[0]['days']), (1,[2]))
+                self.assertEqual(request('activities')[0]['days'], [3])
+                self.assertEqual(request('goals')[0]['items'][0]['completed'], 1)
+                self.assertEqual(request('goals')[0]['name'], 'Nuevo')
+            finally:
+                http.shutdown()
+                http.server_close()
+                thread.join()
+                server.DB = original_db
+
     def test_goals_and_protected_access(self):
         with tempfile.TemporaryDirectory() as folder:
             original_db = server.DB

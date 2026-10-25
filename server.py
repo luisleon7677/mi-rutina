@@ -35,7 +35,12 @@ def initialize():
           id INTEGER PRIMARY KEY, name TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS goal_items (
           id INTEGER PRIMARY KEY, goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
-          name TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)));''')
+          name TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)));
+          CREATE TABLE IF NOT EXISTS prayers (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS prayer_checks (
+          prayer_id INTEGER NOT NULL REFERENCES prayers(id) ON DELETE CASCADE,
+          day INTEGER NOT NULL CHECK(day BETWEEN 1 AND 7), PRIMARY KEY(prayer_id, day));''')
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -78,6 +83,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self.respond(200, {'status':'ok'})
         if not self.authorize():
             return
+        if self.path == '/api/prayers':
+            with connect() as db:
+                prayers = [dict(row) for row in db.execute('SELECT * FROM prayers ORDER BY id')]
+                for prayer in prayers:
+                    prayer['days'] = [row[0] for row in db.execute('SELECT day FROM prayer_checks WHERE prayer_id=? ORDER BY day', (prayer['id'],))]
+            return self.respond(200, prayers)
         if self.path == '/api/goals':
             with connect() as db:
                 goals = [dict(row) for row in db.execute('SELECT * FROM goals ORDER BY id')]
@@ -103,7 +114,42 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.respond(400, {'error':'Solicitud demasiado grande'})
             data = json.loads(self.rfile.read(length) or b'{}')
             with connect() as db:
-                if self.path == '/api/goals':
+                if self.path == '/api/prayers':
+                    name = data.get('name', '')
+                    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+                        return self.respond(400, {'error':'Escribe una petición de hasta 80 caracteres.'})
+                    cursor = db.execute('INSERT INTO prayers(name) VALUES (?)', (name.strip(),))
+                    result = {'id':cursor.lastrowid, 'name':name.strip(), 'total':0, 'days':[]}
+                elif self.path == '/api/prayer-toggle':
+                    prayer_id, day = data.get('id'), data.get('day')
+                    if type(prayer_id) is not int or type(day) is not int or not 1 <= day <= 7:
+                        return self.respond(400, {'error':'Petición o día inválido.'})
+                    if not db.execute('SELECT id FROM prayers WHERE id=?', (prayer_id,)).fetchone():
+                        return self.respond(404, {'error':'Petición no encontrada.'})
+                    removed = db.execute('DELETE FROM prayer_checks WHERE prayer_id=? AND day=?', (prayer_id, day)).rowcount
+                    if not removed:
+                        db.execute('INSERT INTO prayer_checks(prayer_id,day) VALUES (?,?)', (prayer_id, day))
+                        db.execute('UPDATE prayers SET total=total+1 WHERE id=?', (prayer_id,))
+                    result = {'marked':not bool(removed)}
+                elif self.path == '/api/prayer-reset':
+                    db.execute('DELETE FROM prayer_checks')
+                    result = {'ok':True}
+                elif self.path == '/api/prayer-delete':
+                    prayer_id = data.get('id')
+                    if type(prayer_id) is not int:
+                        return self.respond(400, {'error':'Petición inválida.'})
+                    db.execute('DELETE FROM prayers WHERE id=?', (prayer_id,))
+                    result = {'ok':True}
+                elif self.path == '/api/rename':
+                    kind, item_id, name = data.get('kind'), data.get('id'), data.get('name')
+                    tables = {'prayer':'prayers', 'goal':'goals', 'goal-item':'goal_items', 'activity':'activities'}
+                    if kind not in tables or type(item_id) is not int or not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+                        return self.respond(400, {'error':'Revisa el nombre.'})
+                    cursor = db.execute(f'UPDATE {tables[kind]} SET name=? WHERE id=?', (name.strip(), item_id))
+                    if not cursor.rowcount:
+                        return self.respond(404, {'error':'Elemento no encontrado.'})
+                    result = {'name':name.strip()}
+                elif self.path == '/api/goals':
                     name = data.get('name', '')
                     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
                         return self.respond(400, {'error':'Escribe una meta de hasta 80 caracteres.'})
